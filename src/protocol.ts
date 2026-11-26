@@ -26,7 +26,7 @@ export interface ApprovalRequest {
   command: string;
   diffSummary?: string;
   createdAt: string;
-  status: "pending" | "approved" | "denied";
+  status: "pending" | "approved" | "denied" | "expired";
   replyNote?: string;
 }
 

@@ -23,6 +23,8 @@ Environment variables:
 - `AGENTDECK_PORT` (default `7742`)
 - `AGENTDECK_TOKEN` (optional Bearer token for `/v1/snapshot`, `/v1/events`, `/v1/hooks/*`, `/v1/approvals/*`, `/v1/quota`)
 - `AGENTDECK_WEBHOOK_URL` (optional BYO `ntfy.sh` / UnifiedPush / webhook URL fired when an approval request arrives)
+- `AGENTDECK_TIMEOUT_MS` (hook wait timeout in ms, default `600000` / 10 min, max `900000`)
+- `AGENTDECK_FAIL_OPEN` (`1` by default in `hooks/claude-hook.sh` so stopping the bridge never blocks local Claude Code calls)
 
 ## Claude Code Hook Configuration (`~/.claude/settings.json`)
 
@@ -60,7 +62,7 @@ Environment variables:
 - `GET /v1/health` — liveness & queue counts
 - `GET /v1/snapshot` — current `DeckSnapshot` (`harnesses`, `pendingApprovals`, `recentEvents`)
 - `GET /v1/events` — `text/event-stream` SSE stream (`snapshot`, `approval_requested`, `approval_resolved`, `quota_updated`, `hook_event`)
-- `POST /v1/hooks/claude?wait=1` — accepts Claude Code hook JSON; holds `PermissionRequest` open until resolved remotely or timed out
+- `POST /v1/hooks/claude?wait=1` — accepts Claude Code hook JSON (`PermissionRequest` or `PreToolUse`), enriches branch/Edit/Write diffs automatically, holds open up to `AGENTDECK_TIMEOUT_MS` (default `600000`), and returns Claude `hookSpecificOutput` JSON (`decision.behavior` / `permissionDecision`) on resolution or timeout
 - `POST /v1/approvals/:id/resolve` — `{ "decision": "approve" | "deny", "replyNote"?: "..." }`
 - `POST /v1/quota` — upsert multi-tool quota & reset countdown (`claude_code`, `antigravity`, `codex`, `gemini_cli`, `openclaw`)
 

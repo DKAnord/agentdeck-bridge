@@ -1,5 +1,11 @@
 #!/usr/bin/env node
-import { createBridgeServer } from "../src/server.ts";
+import { existsSync } from "node:fs";
+
+const distEntry = new URL("../dist/server.js", import.meta.url);
+const srcEntry = new URL("../src/server.ts", import.meta.url);
+const { createBridgeServer } = await import(
+  existsSync(distEntry) ? distEntry.href : srcEntry.href
+);
 
 const host = process.env.AGENTDECK_HOST?.trim() || "127.0.0.1";
 const rawPort = Number.parseInt(process.env.AGENTDECK_PORT ?? "7742", 10);

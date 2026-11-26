@@ -7,12 +7,15 @@ import {
 } from "node:http";
 import { hostname } from "node:os";
 import {
+  buildClaudeHookResponse,
+  enrichClaudeHookPayload,
+} from "./claude-hook.ts";
+import {
   type ApprovalRequest,
   type BridgeEvent,
   createEmptySnapshot,
   type DeckSnapshot,
   normalizeQuotaWindow,
-  parseClaudeHookPayload,
 } from "./protocol.ts";
 
 export interface BridgeServerOptions {
@@ -109,6 +112,13 @@ export function createBridgeServer(
     }
   }
 
+  function expireApproval(approval: ApprovalRequest): void {
+    if (approval.status !== "pending") return;
+    approval.status = "expired";
+    touchSnapshot();
+    broadcastSse("approval_expired", approval);
+  }
+
   async function notifyWebhook(approval: ApprovalRequest): Promise<void> {
     if (!webhookUrl) return;
     try {
@@ -177,7 +187,7 @@ export function createBridgeServer(
         return;
       }
 
-      const parsed = parseClaudeHookPayload(body);
+      const parsed = enrichClaudeHookPayload(body);
       const evt: BridgeEvent = {
         id: randomUUID(),
         type: parsed.eventName,
@@ -217,12 +227,12 @@ export function createBridgeServer(
       }
 
       const rawTimeout = Number.parseInt(
-        url.searchParams.get("timeoutMs") ?? "30000",
+        url.searchParams.get("timeoutMs") ?? "600000",
         10,
       );
       const timeoutMs = Number.isNaN(rawTimeout)
-        ? 30_000
-        : Math.max(100, Math.min(300_000, rawTimeout));
+        ? 600_000
+        : Math.max(100, Math.min(900_000, rawTimeout));
 
       const result = await new Promise<{
         decision: "approve" | "deny" | "timeout";
@@ -231,6 +241,7 @@ export function createBridgeServer(
       }>((resolve) => {
         const timer = setTimeout(() => {
           waiters.delete(approval.id);
+          expireApproval(approval);
           resolve({ decision: "timeout", approvalId: approval.id });
         }, timeoutMs);
         waiters.set(approval.id, { timer, resolve });
@@ -239,12 +250,22 @@ export function createBridgeServer(
           if (pending) {
             clearTimeout(pending.timer);
             waiters.delete(approval.id);
+            expireApproval(approval);
             resolve({ decision: "timeout", approvalId: approval.id });
           }
         });
       });
 
-      sendJson(res, 200, result);
+      sendJson(
+        res,
+        200,
+        buildClaudeHookResponse({
+          eventName: parsed.eventName,
+          decision: result.decision,
+          approvalId: result.approvalId,
+          replyNote: result.replyNote,
+        }),
+      );
       return;
     }
 

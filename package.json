@@ -20,7 +20,8 @@
   },
   "exports": {
     ".": "./src/server.ts",
-    "./protocol": "./src/protocol.ts"
+    "./protocol": "./src/protocol.ts",
+    "./claude-hook": "./src/claude-hook.ts"
   },
   "scripts": {
     "start": "node bin/agentdeck-bridge.mjs",
