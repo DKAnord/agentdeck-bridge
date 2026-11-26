@@ -1,22 +1,27 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
-import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from "node:http";
+import { randomUUID } from "node:crypto";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import { hostname } from "node:os";
 import {
   buildClaudeHookResponse,
   enrichClaudeHookPayload,
 } from "./claude-hook.ts";
 import {
+  type BridgeRouteContext,
+  extractHookFilePath,
+  handleExtendedBridgeRoute,
+  isAuthorized,
+  notifyWebhook,
+  readJsonObjectOrError,
+  sendJson,
+} from "./http-routes.ts";
+import { createMemoryStore } from "./memory-store.ts";
+import {
   type ApprovalRequest,
   type BridgeEvent,
   createEmptySnapshot,
   type DeckSnapshot,
-  normalizeQuotaWindow,
 } from "./protocol.ts";
+import { createFreePoolManager } from "./router.ts";
 
 export interface BridgeServerOptions {
   host?: string;
@@ -24,6 +29,8 @@ export interface BridgeServerOptions {
   authToken?: string;
   webhookUrl?: string;
   hostnameLabel?: string;
+  memoryDbPath?: string;
+  reserveFloorPct?: number;
 }
 
 export interface BridgeServerHandle {
@@ -42,45 +49,6 @@ interface PendingWaiter {
   }) => void;
 }
 
-const MAX_BODY_BYTES = 65_536;
-
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  if (res.writableEnded) return;
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-  res.end(JSON.stringify(body));
-}
-
-function isAuthorized(req: IncomingMessage, authToken?: string): boolean {
-  if (!authToken) return true;
-  const header = req.headers.authorization;
-  if (typeof header !== "string" || !header.startsWith("Bearer ")) {
-    return false;
-  }
-  const actual = Buffer.from(header.slice(7));
-  const expected = Buffer.from(authToken);
-  if (actual.length !== expected.length) return false;
-  return timingSafeEqual(actual, expected);
-}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buf.length;
-    if (total > MAX_BODY_BYTES) {
-      throw new Error("PAYLOAD_TOO_LARGE");
-    }
-    chunks.push(buf);
-  }
-  const text = Buffer.concat(chunks).toString("utf8").trim();
-  if (!text) return {};
-  return JSON.parse(text) as unknown;
-}
-
 export function createBridgeServer(
   options: BridgeServerOptions = {},
 ): BridgeServerHandle {
@@ -91,10 +59,13 @@ export function createBridgeServer(
   const snapshot = createEmptySnapshot(options.hostnameLabel ?? hostname());
   const sseClients = new Set<ServerResponse>();
   const waiters = new Map<string, PendingWaiter>();
+  const memoryStore = createMemoryStore(options.memoryDbPath ?? ":memory:");
+  const freePool = createFreePoolManager();
+  snapshot.handoffs = memoryStore.listHandoffs();
 
-  function touchSnapshot(): void {
+  const touchSnapshot = () => {
     snapshot.updatedAt = new Date().toISOString();
-  }
+  };
 
   function pushRecentEvent(event: BridgeEvent): void {
     snapshot.recentEvents = [event, ...snapshot.recentEvents].slice(0, 25);
@@ -119,21 +90,14 @@ export function createBridgeServer(
     broadcastSse("approval_expired", approval);
   }
 
-  async function notifyWebhook(approval: ApprovalRequest): Promise<void> {
-    if (!webhookUrl) return;
-    try {
-      await fetch(webhookUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "text/plain; charset=utf-8",
-          Title: `AgentDeck: ${approval.repo} (${approval.branch})`,
-        },
-        body: `Approval needed: ${approval.command}`,
-      });
-    } catch {
-      // Best-effort notification webhook; never block hook pipeline.
-    }
-  }
+  const routeCtx: BridgeRouteContext = {
+    snapshot,
+    memoryStore,
+    freePool,
+    defaultReserveFloorPct: options.reserveFloorPct ?? 20,
+    touchSnapshot,
+    broadcastSse,
+  };
 
   const server = createServer(async (req, res) => {
     const method = req.method ?? "GET";
@@ -177,17 +141,20 @@ export function createBridgeServer(
     }
 
     if (method === "POST" && pathname === "/v1/hooks/claude") {
-      let body: unknown;
-      try {
-        body = await readJsonBody(req);
-      } catch (err) {
-        const tooBig =
-          err instanceof Error && err.message === "PAYLOAD_TOO_LARGE";
-        sendJson(res, tooBig ? 413 : 400, { error: "Invalid JSON payload" });
-        return;
-      }
+      const rawObj = await readJsonObjectOrError(req, res);
+      if (!rawObj) return;
 
-      const parsed = enrichClaudeHookPayload(body);
+      const parsed = enrichClaudeHookPayload(rawObj);
+      memoryStore.recordActivity({
+        repo: parsed.repo,
+        branch: parsed.branch,
+        harness: parsed.harness,
+        action: parsed.command,
+        filePath: extractHookFilePath(rawObj),
+        diffSummary: parsed.diffSummary,
+      });
+      snapshot.handoffs = memoryStore.listHandoffs();
+
       const evt: BridgeEvent = {
         id: randomUUID(),
         type: parsed.eventName,
@@ -219,7 +186,7 @@ export function createBridgeServer(
       ].slice(0, 20);
       touchSnapshot();
       broadcastSse("approval_requested", approval);
-      void notifyWebhook(approval);
+      void notifyWebhook(webhookUrl, approval);
 
       if (url.searchParams.get("wait") !== "1") {
         sendJson(res, 202, { ok: true, approvalId: approval.id });
@@ -272,26 +239,15 @@ export function createBridgeServer(
     const resolveMatch = pathname.match(/^\/v1\/approvals\/([^/]+)\/resolve$/);
     if (method === "POST" && resolveMatch?.[1]) {
       const approvalId = decodeURIComponent(resolveMatch[1]);
-      let body: unknown;
-      try {
-        body = await readJsonBody(req);
-      } catch {
-        sendJson(res, 400, { error: "Invalid JSON payload" });
-        return;
-      }
+      const obj = await readJsonObjectOrError(req, res);
+      if (!obj) return;
 
-      const obj =
-        body && typeof body === "object"
-          ? (body as Record<string, unknown>)
-          : {};
       const decision =
         obj.decision === "approve" || obj.decision === "deny"
           ? obj.decision
           : null;
       if (!decision) {
-        sendJson(res, 400, {
-          error: "decision must be 'approve' or 'deny'",
-        });
+        sendJson(res, 400, { error: "decision must be 'approve' or 'deny'" });
         return;
       }
       const replyNote =
@@ -308,7 +264,16 @@ export function createBridgeServer(
       }
 
       approval.status = decision === "approve" ? "approved" : "denied";
-      if (replyNote) approval.replyNote = replyNote;
+      if (replyNote) {
+        approval.replyNote = replyNote;
+        memoryStore.recordActivity({
+          repo: approval.repo,
+          branch: approval.branch,
+          harness: approval.harness,
+          note: replyNote,
+        });
+        snapshot.handoffs = memoryStore.listHandoffs();
+      }
       touchSnapshot();
       broadcastSse("approval_resolved", approval);
 
@@ -322,40 +287,12 @@ export function createBridgeServer(
           ...(replyNote ? { replyNote } : {}),
         });
       }
-
       sendJson(res, 200, { ok: true, approval });
       return;
     }
 
-    if (method === "POST" && pathname === "/v1/quota") {
-      let body: unknown;
-      try {
-        body = await readJsonBody(req);
-      } catch {
-        sendJson(res, 400, { error: "Invalid JSON payload" });
-        return;
-      }
-
-      const quota = normalizeQuotaWindow(body);
-      if (!quota) {
-        sendJson(res, 400, { error: "Invalid quota payload" });
-        return;
-      }
-
-      const idx = snapshot.harnesses.findIndex(
-        (item) => item.harness === quota.harness,
-      );
-      if (idx >= 0) {
-        snapshot.harnesses[idx] = quota;
-      } else {
-        snapshot.harnesses.push(quota);
-      }
-      touchSnapshot();
-      broadcastSse("quota_updated", quota);
-      sendJson(res, 200, { ok: true, quota });
+    if (await handleExtendedBridgeRoute(routeCtx, method, url, req, res))
       return;
-    }
-
     sendJson(res, 404, { error: "Not found" });
   });
 
@@ -381,14 +318,13 @@ export function createBridgeServer(
         waiters.delete(id);
         waiter.resolve({ decision: "timeout", approvalId: id });
       }
-      for (const client of sseClients) {
-        client.end();
-      }
+      for (const client of sseClients) client.end();
       sseClients.clear();
       await new Promise<void>((resolve) => {
         server.closeAllConnections?.();
         server.close(() => resolve());
       });
+      memoryStore.close();
     },
     getSnapshot: () => snapshot,
   };

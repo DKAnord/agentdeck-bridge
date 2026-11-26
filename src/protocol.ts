@@ -7,7 +7,57 @@ export type HarnessId =
   | "openclaw"
   | "gemini_cli"
   | "opencode"
+  | "free_pool"
   | "custom";
+
+export type TaskComplexity = "light" | "medium" | "heavy";
+
+export interface FreeProviderSlot {
+  id: string;
+  label: string;
+  remainingPct: number;
+  resetsInMinutes?: number;
+  cooldownUntil?: string;
+}
+
+export interface MemoryRecord {
+  id: string;
+  repo: string;
+  scope: string;
+  summary: string;
+  tags: string[];
+  sourceHarness: HarnessId;
+  createdAt: string;
+}
+
+export interface HandoffCapsule {
+  repo: string;
+  branch: string;
+  goal: string;
+  lastHarness: HarnessId;
+  diffSummary?: string;
+  touchedFiles: string[];
+  recentActions: string[];
+  notes: string[];
+  updatedAt: string;
+}
+
+export interface RouteDecision {
+  selectedHarness: HarnessId;
+  complexity: TaskComplexity;
+  reason:
+    | "pro_headroom"
+    | "reset_harvest"
+    | "reserve_floor_overflow"
+    | "capped_failover"
+    | "free_pool_default"
+    | "preferred_harness";
+  reserveFloorPct: number;
+  freeProvider?: string;
+  handoffPrompt: string;
+  capsule?: HandoffCapsule;
+  resetNudge?: string;
+}
 
 export interface QuotaWindow {
   harness: HarnessId;
@@ -45,6 +95,7 @@ export interface DeckSnapshot {
   harnesses: QuotaWindow[];
   pendingApprovals: ApprovalRequest[];
   recentEvents: BridgeEvent[];
+  handoffs: HandoffCapsule[];
 }
 
 export interface ParsedClaudeHook {
@@ -65,6 +116,7 @@ const VALID_HARNESSES = new Set<HarnessId>([
   "openclaw",
   "gemini_cli",
   "opencode",
+  "free_pool",
   "custom",
 ]);
 
@@ -76,6 +128,12 @@ const VALID_STATUSES = new Set<QuotaWindow["status"]>([
   "capped",
 ]);
 
+export function parseHarnessId(value: unknown): HarnessId | null {
+  return typeof value === "string" && VALID_HARNESSES.has(value as HarnessId)
+    ? (value as HarnessId)
+    : null;
+}
+
 export function createEmptySnapshot(host: string): DeckSnapshot {
   return {
     protocolVersion: 1,
@@ -84,6 +142,7 @@ export function createEmptySnapshot(host: string): DeckSnapshot {
     harnesses: [],
     pendingApprovals: [],
     recentEvents: [],
+    handoffs: [],
   };
 }
 
@@ -135,11 +194,7 @@ export function parseClaudeHookPayload(raw: unknown): ParsedClaudeHook {
 export function normalizeQuotaWindow(raw: unknown): QuotaWindow | null {
   if (!raw || typeof raw !== "object") return null;
   const obj = raw as Record<string, unknown>;
-  const harness =
-    typeof obj.harness === "string" &&
-    VALID_HARNESSES.has(obj.harness as HarnessId)
-      ? (obj.harness as HarnessId)
-      : null;
+  const harness = parseHarnessId(obj.harness);
   if (!harness) return null;
 
   const label = strOrFallback(obj.label, harness);

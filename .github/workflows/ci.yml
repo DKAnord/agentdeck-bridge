@@ -14,10 +14,15 @@ jobs:
           node-version: "22"
       - name: Run standalone Node test suite
         run: npm test
-      - name: Verify CLI & hook syntax
+      - name: Verify CLI, hook syntax, MCP stdio & rule sync
         run: |
           node --check bin/agentdeck-bridge.mjs
           bash -n hooks/claude-hook.sh
           bash -n examples/simulate-approval.sh
+          TDIR="$(mktemp -d)"
+          node bin/agentdeck-bridge.mjs --sync-rules "$TDIR"
+          MCP_OUT="$(printf '{"jsonrpc":"2.0","id":1,"method":"initialize"}\n{"jsonrpc":"2.0","id":2,"method":"tools/list"}\n' | AGENTDECK_MEMORY_DB="$TDIR/memory.sqlite" node bin/agentdeck-bridge.mjs --mcp)"
+          echo "$MCP_OUT" | grep -q '"agentdeck-memory"'
+          rm -rf "$TDIR"
       - name: Run end-to-end blocking approval simulation
         run: bash examples/simulate-approval.sh

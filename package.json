@@ -1,8 +1,9 @@
 {
   "name": "agentdeck-bridge",
-  "version": "0.1.0",
-  "description": "MIT zero-dependency local JSON/SSE bridge daemon and Claude Code hook for AgentDeck",
+  "version": "0.2.0",
+  "description": "MIT zero-dependency local JSON/SSE bridge, proactive quota router, and shared SQLite MCP memory for AgentDeck",
   "license": "MIT",
+  "private": true,
   "type": "module",
   "engines": {
     "node": ">=22.18.0"
@@ -21,11 +22,15 @@
   "exports": {
     ".": "./src/server.ts",
     "./protocol": "./src/protocol.ts",
-    "./claude-hook": "./src/claude-hook.ts"
+    "./claude-hook": "./src/claude-hook.ts",
+    "./router": "./src/router.ts",
+    "./memory": "./src/memory-store.ts",
+    "./rule-sync": "./src/rule-sync.ts",
+    "./mcp": "./src/mcp-stdio.ts"
   },
   "scripts": {
     "start": "node bin/agentdeck-bridge.mjs",
-    "test": "node --test test/standalone.test.mjs",
+    "test": "node --test test/standalone.test.mjs test/router-memory.standalone.test.mjs",
     "demo": "bash examples/simulate-approval.sh",
     "typecheck": "tsc --noEmit"
   }
