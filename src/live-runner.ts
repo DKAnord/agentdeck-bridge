@@ -22,6 +22,15 @@ export {
 
 const MAX_OUTPUT_BYTES = 32_768;
 const DEFAULT_RUN_TIMEOUT_MS = 120_000;
+const ANSI_ESCAPE_RE = new RegExp(
+  `${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`,
+  "g",
+);
+
+const stripAnsi = (value: string) => value.replace(ANSI_ESCAPE_RE, "");
+
+const defaultOpenCodeModel = () =>
+  process.env.AGENTDECK_OPENCODE_MODEL?.trim() || "opencode/beam-free";
 
 interface HarnessCliSpec {
   binary: string;
@@ -30,6 +39,8 @@ interface HarnessCliSpec {
 
 const opencodeArgs = (prompt: string, cwd: string) => [
   "run",
+  "-m",
+  defaultOpenCodeModel(),
   "--dir",
   cwd,
   "--format",
@@ -130,10 +141,12 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
 
   function failStart(
     runId: string,
-    harness: HarnessId,
+    req: LivePromptRequest,
+    repo: string,
     error: string,
     extra: { rejected?: boolean; cwd?: string } = {},
   ): StartLivePromptHandle {
+    emitStatus(runId, req, repo, extra.cwd ?? "", "failed", { error });
     return {
       runId,
       started: false,
@@ -142,7 +155,7 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
       done: Promise.resolve({
         runId,
         started: false,
-        harness,
+        harness: req.harness,
         error,
         ...extra,
       }),
@@ -193,7 +206,7 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
     const repo = req.repo?.trim() || "workspace";
     const cwdCheck = resolveAllowedCwd(req.cwd, allowedDirs);
     if (!cwdCheck.ok) {
-      return failStart(runId, req.harness, cwdCheck.error, {
+      return failStart(runId, req, repo, cwdCheck.error, {
         rejected: cwdCheck.rejected,
       });
     }
@@ -201,7 +214,8 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
     if (!spec) {
       return failStart(
         runId,
-        req.harness,
+        req,
+        repo,
         `Harness '${req.harness}' is not allowlisted`,
         { cwd: cwdCheck.cwd },
       );
@@ -210,7 +224,8 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
     if (!resolvedBin) {
       return failStart(
         runId,
-        req.harness,
+        req,
+        repo,
         `CLI '${spec.binary}' not found in PATH`,
         { cwd: cwdCheck.cwd },
       );
@@ -242,7 +257,8 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
       let output = "";
       let settled = false;
       const append = (stream: "stdout" | "stderr", buf: Buffer | string) => {
-        const chunk = typeof buf === "string" ? buf : buf.toString("utf8");
+        const rawChunk = typeof buf === "string" ? buf : buf.toString("utf8");
+        const chunk = stripAnsi(rawChunk);
         if (!chunk) return;
         if (output.length < MAX_OUTPUT_BYTES) {
           output += chunk.slice(0, MAX_OUTPUT_BYTES - output.length);
@@ -278,7 +294,7 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
           command: commandLabel,
           cwd: cwdCheck.cwd,
           exitCode,
-          output: output.trim(),
+          output: stripAnsi(output).trim(),
           ...(error ? { error } : {}),
           durationMs: Date.now() - startedAt,
         });

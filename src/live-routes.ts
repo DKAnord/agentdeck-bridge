@@ -20,8 +20,20 @@ export async function runLiveDispatchExecution(
     waitMs?: number;
   },
 ): Promise<{ status: number; run: Record<string, unknown> }> {
+  const fallbackOrder: HarnessId[] = [
+    "antigravity",
+    "free_pool",
+    "opencode",
+    "claude_code",
+    "codex",
+  ];
+  const resolvedHarness = ctx.liveRunner.isHarnessAvailable(params.harness)
+    ? params.harness
+    : (fallbackOrder.find((h) => ctx.liveRunner.isHarnessAvailable(h)) ??
+      params.harness);
+
   const launch = ctx.liveRunner.startLivePrompt({
-    harness: params.harness,
+    harness: resolvedHarness,
     prompt: params.prompt,
     repo: params.repo,
     branch: params.branch,
@@ -42,7 +54,7 @@ export async function runLiveDispatchExecution(
         runId: launch.runId,
         started: true,
         status: "running",
-        harness: params.harness,
+        harness: resolvedHarness,
         command: launch.command,
         cwd: launch.cwd,
       },
@@ -68,7 +80,7 @@ export async function runLiveDispatchExecution(
       runId: launch.runId,
       started: true,
       status: "running",
-      harness: params.harness,
+      harness: resolvedHarness,
       command: launch.command,
       cwd: launch.cwd,
     },
