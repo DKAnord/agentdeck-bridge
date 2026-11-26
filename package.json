@@ -1,7 +1,7 @@
 {
   "name": "agentdeck-bridge",
-  "version": "0.2.0",
-  "description": "MIT zero-dependency local JSON/SSE bridge, proactive quota router, and shared SQLite MCP memory for AgentDeck",
+  "version": "0.3.0",
+  "description": "MIT zero-dependency local JSON/SSE bridge, E2E relay client, proactive quota router, and shared SQLite MCP memory for AgentDeck",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -26,11 +26,14 @@
     "./router": "./src/router.ts",
     "./memory": "./src/memory-store.ts",
     "./rule-sync": "./src/rule-sync.ts",
-    "./mcp": "./src/mcp-stdio.ts"
+    "./mcp": "./src/mcp-stdio.ts",
+    "./e2e": "./src/e2e-crypto.ts",
+    "./runner": "./src/live-runner.ts",
+    "./relay": "./src/relay-client.ts"
   },
   "scripts": {
     "start": "node bin/agentdeck-bridge.mjs",
-    "test": "node --test test/standalone.test.mjs test/router-memory.standalone.test.mjs",
+    "test": "node --test test/standalone.test.mjs test/router-memory.standalone.test.mjs test/e2e-relay-runner.standalone.test.mjs",
     "demo": "bash examples/simulate-approval.sh",
     "typecheck": "tsc --noEmit"
   }

@@ -88,6 +88,15 @@ export interface BridgeEvent {
   createdAt: string;
 }
 
+export interface GitHubPulseRepo {
+  repo: string;
+  branch: string;
+  openIssues: number;
+  openPrs: number;
+  ciStatus: "pass" | "fail" | "pending" | "unknown";
+  updatedAt: string;
+}
+
 export interface DeckSnapshot {
   protocolVersion: 1;
   host: string;
@@ -96,6 +105,7 @@ export interface DeckSnapshot {
   pendingApprovals: ApprovalRequest[];
   recentEvents: BridgeEvent[];
   handoffs: HandoffCapsule[];
+  pulses: GitHubPulseRepo[];
 }
 
 export interface ParsedClaudeHook {
@@ -143,6 +153,7 @@ export function createEmptySnapshot(host: string): DeckSnapshot {
     pendingApprovals: [],
     recentEvents: [],
     handoffs: [],
+    pulses: [],
   };
 }
 

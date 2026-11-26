@@ -1,14 +1,18 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { runLiveDispatchExecution } from "./live-routes.ts";
+import type { LiveRunner } from "./live-runner.ts";
 import type { MemoryStore } from "./memory-store.ts";
 import {
   type ApprovalRequest,
+  type BridgeEvent,
   type DeckSnapshot,
   normalizeQuotaWindow,
   parseHarnessId,
   type QuotaWindow,
   type TaskComplexity,
 } from "./protocol.ts";
+import type { RelayClientStatus } from "./relay-client.ts";
 import {
   type createFreePoolManager,
   selectProactiveHarness,
@@ -16,13 +20,36 @@ import {
 
 const MAX_BODY_BYTES = 65_536;
 
+export interface BridgeHttpResponse {
+  status: number;
+  body: unknown;
+}
+
+export interface PendingWaiter {
+  timer: ReturnType<typeof setTimeout>;
+  resolve: (result: {
+    decision: "approve" | "deny" | "timeout";
+    approvalId: string;
+    replyNote?: string;
+  }) => void;
+}
+
 export interface BridgeRouteContext {
   snapshot: DeckSnapshot;
   memoryStore: MemoryStore;
   freePool: ReturnType<typeof createFreePoolManager>;
+  liveRunner: LiveRunner;
+  waiters: Map<string, PendingWaiter>;
+  delayTimers: Set<ReturnType<typeof setTimeout>>;
   defaultReserveFloorPct: number;
+  webhookUrl?: string;
+  authToken?: string;
+  isStopped: () => boolean;
+  getDirectBaseUrl: () => string;
+  getRelayStatus: () => RelayClientStatus | null;
+  pushRecentEvent: (event: BridgeEvent) => void;
   touchSnapshot: () => void;
-  broadcastSse: (eventName: string, data: unknown) => void;
+  broadcast: (eventName: string, data: unknown) => void;
 }
 
 export function sendJson(
@@ -82,22 +109,6 @@ export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return text ? (JSON.parse(text) as unknown) : {};
 }
 
-export async function readJsonObjectOrError(
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<Record<string, unknown> | null> {
-  try {
-    const body = await readJsonBody(req);
-    return body && typeof body === "object"
-      ? (body as Record<string, unknown>)
-      : {};
-  } catch (err) {
-    const tooBig = err instanceof Error && err.message === "PAYLOAD_TOO_LARGE";
-    sendJson(res, tooBig ? 413 : 400, { error: "Invalid JSON payload" });
-    return null;
-  }
-}
-
 export function extractHookFilePath(
   rawObj: Record<string, unknown>,
 ): string | undefined {
@@ -121,7 +132,7 @@ export function upsertQuotaWindow(
   else snapshot.harnesses.push(quota);
 }
 
-const parseComplexity = (val: unknown): TaskComplexity | undefined =>
+export const parseComplexity = (val: unknown): TaskComplexity | undefined =>
   val === "light" || val === "medium" || val === "heavy" ? val : undefined;
 
 function parseHeaderMap(
@@ -139,33 +150,27 @@ export async function handleExtendedBridgeRoute(
   ctx: BridgeRouteContext,
   method: string,
   url: URL,
-  req: IncomingMessage,
-  res: ServerResponse,
-): Promise<boolean> {
+  obj: Record<string, unknown>,
+): Promise<BridgeHttpResponse | null> {
   const pathname = url.pathname;
 
   if (method === "POST" && pathname === "/v1/quota") {
-    const obj = await readJsonObjectOrError(req, res);
-    if (!obj) return true;
     const quota = normalizeQuotaWindow(obj);
-    if (!quota) {
-      sendJson(res, 400, { error: "Invalid quota payload" });
-      return true;
-    }
+    if (!quota)
+      return { status: 400, body: { error: "Invalid quota payload" } };
     upsertQuotaWindow(ctx.snapshot, quota);
     ctx.touchSnapshot();
-    ctx.broadcastSse("quota_updated", quota);
-    sendJson(res, 200, { ok: true, quota });
-    return true;
+    ctx.broadcast("quota_updated", quota);
+    return { status: 200, body: { ok: true, quota } };
   }
 
   if (method === "POST" && pathname === "/v1/dispatch") {
-    const obj = await readJsonObjectOrError(req, res);
-    if (!obj) return true;
     const prompt = typeof obj.prompt === "string" ? obj.prompt.trim() : "";
     if (!prompt) {
-      sendJson(res, 400, { error: "prompt must be a non-empty string" });
-      return true;
+      return {
+        status: 400,
+        body: { error: "prompt must be a non-empty string" },
+      };
     }
     const repo =
       typeof obj.repo === "string" && obj.repo.trim()
@@ -203,18 +208,42 @@ export async function handleExtendedBridgeRoute(
     });
     ctx.snapshot.handoffs = ctx.memoryStore.listHandoffs();
     ctx.touchSnapshot();
-    ctx.broadcastSse("task_routed", route);
-    sendJson(res, 200, { ok: true, route });
-    return true;
+    ctx.broadcast("task_routed", route);
+
+    if (obj.executeNow) {
+      const cwd = typeof obj.cwd === "string" ? obj.cwd : undefined;
+      const waitMs = typeof obj.waitMs === "number" ? obj.waitMs : undefined;
+      const execRes = await runLiveDispatchExecution(ctx, {
+        harness: route.selectedHarness,
+        prompt: route.handoffPrompt,
+        repo,
+        branch,
+        cwd,
+        waitMs,
+      });
+      if (execRes.status === 403) {
+        return {
+          status: 403,
+          body: {
+            ok: false,
+            error: execRes.run.error,
+            route,
+            run: execRes.run,
+          },
+        };
+      }
+      return { status: 200, body: { ok: true, route, run: execRes.run } };
+    }
+    return { status: 200, body: { ok: true, route } };
   }
 
   if (method === "POST" && pathname === "/v1/free-pool") {
-    const obj = await readJsonObjectOrError(req, res);
-    if (!obj) return true;
     const id = typeof obj.id === "string" ? obj.id.trim() : "";
     if (!id) {
-      sendJson(res, 400, { error: "id is required for free-pool slot" });
-      return true;
+      return {
+        status: 400,
+        body: { error: "id is required for free-pool slot" },
+      };
     }
     const slot = ctx.freePool.upsertSlot({
       id,
@@ -231,36 +260,31 @@ export async function handleExtendedBridgeRoute(
     const quota = ctx.freePool.toQuotaWindow();
     upsertQuotaWindow(ctx.snapshot, quota);
     ctx.touchSnapshot();
-    ctx.broadcastSse("quota_updated", quota);
-    sendJson(res, 200, {
-      ok: true,
-      slot,
-      quota,
-      slots: ctx.freePool.listSlots(),
-    });
-    return true;
+    ctx.broadcast("quota_updated", quota);
+    return {
+      status: 200,
+      body: { ok: true, slot, quota, slots: ctx.freePool.listSlots() },
+    };
   }
 
   if (method === "GET" && pathname === "/v1/memory") {
     const repo = url.searchParams.get("repo")?.trim() || undefined;
     const q = url.searchParams.get("q")?.trim() || undefined;
-    sendJson(res, 200, {
-      ok: true,
-      handoff: repo ? ctx.memoryStore.getHandoff(repo) : null,
-      handoffs: ctx.memoryStore.listHandoffs(),
-      memories: ctx.memoryStore.recall({ query: q, repo }),
-    });
-    return true;
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        handoff: repo ? ctx.memoryStore.getHandoff(repo) : null,
+        handoffs: ctx.memoryStore.listHandoffs(),
+        memories: ctx.memoryStore.recall({ query: q, repo }),
+      },
+    };
   }
 
   if (method === "POST" && pathname === "/v1/memory") {
-    const obj = await readJsonObjectOrError(req, res);
-    if (!obj) return true;
     const summary = typeof obj.summary === "string" ? obj.summary.trim() : "";
-    if (!summary) {
-      sendJson(res, 400, { error: "summary is required" });
-      return true;
-    }
+    if (!summary)
+      return { status: 400, body: { error: "summary is required" } };
     const tags = Array.isArray(obj.tags)
       ? obj.tags.filter((item): item is string => typeof item === "string")
       : undefined;
@@ -272,10 +296,9 @@ export async function handleExtendedBridgeRoute(
       sourceHarness: parseHarnessId(obj.harness) ?? "custom",
     });
     ctx.touchSnapshot();
-    ctx.broadcastSse("memory_updated", memory);
-    sendJson(res, 201, { ok: true, memory });
-    return true;
+    ctx.broadcast("memory_updated", memory);
+    return { status: 201, body: { ok: true, memory } };
   }
 
-  return false;
+  return null;
 }

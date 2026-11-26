@@ -28,6 +28,20 @@ Environment variables:
 - `AGENTDECK_RESERVE_FLOOR` (default `20` — percentage of Pro quota held back for deep work)
 - `AGENTDECK_TIMEOUT_MS` (hook wait timeout in ms, default `600000` / 10 min, max `900000`)
 - `AGENTDECK_FAIL_OPEN` (`1` by default in `hooks/claude-hook.sh` so stopping the bridge never blocks local Claude Code calls)
+- `AGENTDECK_RELAY_URL` (optional Cloudflare Relay base URL; same as `--relay <url>`)
+- `AGENTDECK_RELAY_SESSION` (optional persisted X25519 session file, default `~/.agentdeck/relay-session.json`)
+- `AGENTDECK_ALLOWED_DIRS` (comma-separated allowlisted project directories for `executeNow` live CLI runs; same as `--allowed-dirs <csv>`)
+- `AGENTDECK_GITHUB_PULSE` (`1` or `--pulse` to enable 60s `gh` repo pulse polling)
+
+## E2E Relay Pairing & Live CLI Execution (`v0.3.0`)
+
+```bash
+# Create/print X25519 pairing URI and exit:
+node bin/agentdeck-bridge.mjs --pair --relay https://relay.example.com
+
+# Run daemon with outbound E2E WebSocket relay + allowlisted live execution:
+node bin/agentdeck-bridge.mjs --relay https://relay.example.com --allowed-dirs ~/code/my-api
+```
 
 ## Proactive Quota Autopilot & Shared Memory (`--mcp` / `--sync-rules`)
 
@@ -80,12 +94,16 @@ curl -fsS http://127.0.0.1:7742/v1/dispatch -H 'Content-Type: application/json' 
 ## Protocol v1 Endpoints
 
 - `GET /v1/health` — liveness & queue counts
-- `GET /v1/snapshot` — current `DeckSnapshot` (`harnesses`, `pendingApprovals`, `recentEvents`, `handoffs`)
-- `GET /v1/events` — `text/event-stream` SSE stream (`snapshot`, `approval_requested`, `approval_resolved`, `quota_updated`, `hook_event`, `task_routed`, `memory_updated`)
+- `GET /v1/snapshot` — current `DeckSnapshot` (`harnesses`, `pendingApprovals`, `recentEvents`, `handoffs`, `pulses`)
+- `GET /v1/events` — `text/event-stream` SSE stream (`snapshot`, `approval_requested`, `approval_resolved`, `quota_updated`, `hook_event`, `task_routed`, `memory_updated`, `run_output`, `run_status`, `pulses_updated`)
+- `GET /v1/pairing` — returns `directUri` (`agentdeck://direct?...`) and active `relayPairingUri` (`agentdeck://pair?...`), `roomId`, `bridgeConnected`, `clientPaired`
+- `GET /v1/pulses?refresh=1` — polls `gh` CLI (cached 60s) and updates `snapshot.pulses`
 - `POST /v1/hooks/claude?wait=1` — accepts Claude Code hook JSON, enriches branch/diffs, updates repo `HandoffCapsule`, and returns `hookSpecificOutput` JSON on resolution or timeout
+- `POST /v1/demo-gate` — triggers a realistic `PermissionRequest` approval (`wait=0|1`, optional `delayMs` capped `0..10000`) for testing lockscreen approval gates
+- `POST /v1/triage` — `{ repo, branch?, executeNow? }` routes repo triage via `selectProactiveHarness` and optionally spawns allowlisted CLI execution
 - `POST /v1/approvals/:id/resolve` — `{ "decision": "approve" | "deny", "replyNote"?: "..." }`
 - `POST /v1/quota` — upsert multi-tool quota & reset countdown (`claude_code`, `antigravity`, `codex`, `gemini_cli`, `openclaw`, `opencode`, `free_pool`)
-- `POST /v1/dispatch` — select best available harness via complexity × reserve-floor waterfall + reset harvest and prepend `[AgentDeck Shared Memory · Seamless Handoff]`
+- `POST /v1/dispatch` — select best available harness via complexity × reserve-floor waterfall + reset harvest, optionally executing via `executeNow: true` + `cwd`
 - `POST /v1/free-pool` — register or update free-tier API providers (supports `x-ratelimit-*` headers & `429` cooldown rotation)
 - `GET /v1/memory` / `POST /v1/memory` — inspect repo handoff capsules or store/search FTS5 shared memories
 
