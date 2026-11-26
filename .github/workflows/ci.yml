@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run standalone Node test suite
+        run: npm test
+      - name: Verify CLI & hook syntax
+        run: |
+          node --check bin/agentdeck-bridge.mjs
+          bash -n hooks/claude-hook.sh
+          bash -n examples/simulate-approval.sh
+      - name: Run end-to-end blocking approval simulation
+        run: bash examples/simulate-approval.sh

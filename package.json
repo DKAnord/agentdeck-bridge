@@ -1,0 +1,31 @@
+{
+  "name": "agentdeck-bridge",
+  "version": "0.1.0",
+  "description": "MIT zero-dependency local JSON/SSE bridge daemon and Claude Code hook for AgentDeck",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "homepage": "https://github.com/DKAnord/agentdeck-bridge#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DKAnord/agentdeck-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DKAnord/agentdeck-bridge/issues"
+  },
+  "bin": {
+    "agentdeck-bridge": "./bin/agentdeck-bridge.mjs"
+  },
+  "exports": {
+    ".": "./src/server.ts",
+    "./protocol": "./src/protocol.ts"
+  },
+  "scripts": {
+    "start": "node bin/agentdeck-bridge.mjs",
+    "test": "node --test test/standalone.test.mjs",
+    "demo": "bash examples/simulate-approval.sh",
+    "typecheck": "tsc --noEmit"
+  }
+}
