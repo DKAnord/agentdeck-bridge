@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { runLiveDispatchExecution } from "./live-routes.ts";
 import type { LiveRunner } from "./live-runner.ts";
@@ -184,6 +184,10 @@ export async function handleExtendedBridgeRoute(
       typeof obj.reserveFloorPct === "number"
         ? Math.max(0, Math.min(90, Math.round(obj.reserveFloorPct)))
         : ctx.defaultReserveFloorPct;
+    const threadId =
+      typeof obj.threadId === "string" && obj.threadId.trim()
+        ? obj.threadId.trim()
+        : randomUUID();
 
     const isGenericScope = repo === "workspace" || repo === "my-api-repo";
     const { capsule, block: rawBlock } = isGenericScope
@@ -192,11 +196,11 @@ export async function handleExtendedBridgeRoute(
           block: "",
         }
       : ctx.memoryStore.buildHandoffContextBlock(repo, prompt);
-    let contextBlock = rawBlock;
+    const contextParts: string[] = [];
+    if (rawBlock) contextParts.push(rawBlock);
     if (isGenericScope) {
-      const parts: string[] = [];
       if (ctx.snapshot.pulses.length > 0) {
-        parts.push(
+        contextParts.push(
           `[Live GitHub Repo Pulse]\n${ctx.snapshot.pulses
             .map(
               (p) =>
@@ -207,14 +211,17 @@ export async function handleExtendedBridgeRoute(
       }
       const memories = ctx.memoryStore.recall({ query: prompt, limit: 3 });
       if (memories.length > 0) {
-        parts.push(
+        contextParts.push(
           `Recalled memories:\n${memories
             .map((m) => `- [${m.repo}/${m.scope}] ${m.summary}`)
             .join("\n")}`,
         );
       }
-      contextBlock = parts.join("\n\n");
     }
+    const threadBlock =
+      ctx.memoryStore.history.buildThreadContextBlock(threadId);
+    if (threadBlock) contextParts.push(threadBlock);
+    const contextBlock = contextParts.join("\n\n");
     const route = selectProactiveHarness({
       prompt,
       harnesses: ctx.snapshot.harnesses,
@@ -244,6 +251,8 @@ export async function handleExtendedBridgeRoute(
       const execRes = await runLiveDispatchExecution(ctx, {
         harness: route.selectedHarness,
         prompt: route.handoffPrompt,
+        rawPrompt: prompt,
+        threadId,
         repo,
         branch,
         cwd,
@@ -255,14 +264,39 @@ export async function handleExtendedBridgeRoute(
           body: {
             ok: false,
             error: execRes.run.error,
+            threadId,
             route,
             run: execRes.run,
           },
         };
       }
-      return { status: 200, body: { ok: true, route, run: execRes.run } };
+      return {
+        status: 200,
+        body: { ok: true, threadId, route, run: execRes.run },
+      };
     }
-    return { status: 200, body: { ok: true, route } };
+    const stagedId = randomUUID();
+    const stagedStart = ctx.memoryStore.history.recordRunStart({
+      id: stagedId,
+      threadId,
+      repo,
+      harness: route.selectedHarness,
+      prompt,
+    });
+    const stagedRecord =
+      ctx.memoryStore.history.recordRunFinish({
+        id: stagedId,
+        output: `Staged prompt for ${route.selectedHarness}.`,
+        status: "completed",
+        durationMs: 0,
+      }) ?? stagedStart;
+    ctx.snapshot.recentRuns = ctx.memoryStore.history.listRuns({
+      limit: 20,
+      maxOutputChars: 4000,
+    });
+    ctx.touchSnapshot();
+    ctx.broadcast("history_updated", stagedRecord);
+    return { status: 200, body: { ok: true, threadId, route } };
   }
 
   if (method === "POST" && pathname === "/v1/free-pool") {

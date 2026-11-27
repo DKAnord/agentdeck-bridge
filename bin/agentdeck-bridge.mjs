@@ -152,7 +152,7 @@ if (args.includes("--mcp")) {
 
   const bound = await handle.start();
   console.log(
-    `agentdeck-bridge v0.3.2 listening on ${bound.url} (Protocol v1 · auth=${authToken ? "bearer" : "off"} · db=${memoryDbPath})`,
+    `agentdeck-bridge v0.3.3 listening on ${bound.url} (Protocol v1 · auth=${authToken ? "bearer" : "off"} · db=${memoryDbPath})`,
   );
   console.log(`  GET  ${bound.url}/v1/health`);
   console.log(`  GET  ${bound.url}/v1/snapshot`);
@@ -163,6 +163,8 @@ if (args.includes("--mcp")) {
   console.log(`  POST ${bound.url}/v1/demo-gate`);
   console.log(`  POST ${bound.url}/v1/triage`);
   console.log(`  POST ${bound.url}/v1/dispatch`);
+  console.log(`  GET  ${bound.url}/v1/history`);
+  console.log(`  POST ${bound.url}/v1/history/clear`);
   console.log(`  POST ${bound.url}/v1/free-pool`);
   console.log(`  GET  ${bound.url}/v1/memory`);
 

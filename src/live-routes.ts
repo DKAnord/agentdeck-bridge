@@ -14,6 +14,8 @@ export async function runLiveDispatchExecution(
   params: {
     harness: HarnessId;
     prompt: string;
+    rawPrompt?: string;
+    threadId?: string;
     repo: string;
     branch?: string;
     cwd?: string;
@@ -35,6 +37,8 @@ export async function runLiveDispatchExecution(
   const launch = ctx.liveRunner.startLivePrompt({
     harness: resolvedHarness,
     prompt: params.prompt,
+    rawPrompt: params.rawPrompt,
+    threadId: params.threadId,
     repo: params.repo,
     branch: params.branch,
     cwd: params.cwd,
@@ -52,6 +56,7 @@ export async function runLiveDispatchExecution(
       status: 200,
       run: {
         runId: launch.runId,
+        threadId: launch.threadId,
         started: true,
         status: "running",
         harness: resolvedHarness,
@@ -78,6 +83,7 @@ export async function runLiveDispatchExecution(
     status: 200,
     run: {
       runId: launch.runId,
+      threadId: launch.threadId,
       started: true,
       status: "running",
       harness: resolvedHarness,
@@ -243,6 +249,7 @@ export async function handleLiveBridgeRoute(
       const execRes = await runLiveDispatchExecution(ctx, {
         harness: route.selectedHarness,
         prompt: route.handoffPrompt,
+        rawPrompt: prompt,
         repo,
         branch,
         cwd,
@@ -301,6 +308,51 @@ export async function handleLiveBridgeRoute(
     ctx.touchSnapshot();
     ctx.broadcast("pulses_updated", pulses);
     return { status: 200, body: { ok: true, pulses } };
+  }
+
+  if (method === "GET" && pathname === "/v1/history") {
+    const threadId = url.searchParams.get("threadId")?.trim() || undefined;
+    const repo = url.searchParams.get("repo")?.trim() || undefined;
+    const rawLim = Number.parseInt(url.searchParams.get("limit") ?? "20", 10);
+    const runs = ctx.memoryStore.history.listRuns({
+      threadId,
+      repo,
+      limit: Number.isNaN(rawLim) ? 20 : rawLim,
+    });
+    return { status: 200, body: { ok: true, runs } };
+  }
+
+  if (
+    (method === "DELETE" && pathname === "/v1/history") ||
+    (method === "POST" && pathname === "/v1/history/clear")
+  ) {
+    const threadId =
+      (typeof obj.threadId === "string" ? obj.threadId.trim() : "") ||
+      url.searchParams.get("threadId")?.trim() ||
+      undefined;
+    const clearHandoffs =
+      obj.clearHandoffs === true ||
+      obj.clearHandoffs === "true" ||
+      url.searchParams.get("clearHandoffs") === "1";
+    const deleted = ctx.memoryStore.history.clearHistory(
+      threadId ? { threadId } : undefined,
+    );
+    if (clearHandoffs) {
+      ctx.memoryStore.clearHandoffs();
+      ctx.snapshot.handoffs = [];
+    }
+    if (!threadId) ctx.snapshot.recentEvents = [];
+    ctx.snapshot.recentRuns = ctx.memoryStore.history.listRuns({
+      limit: 20,
+      maxOutputChars: 4000,
+    });
+    ctx.touchSnapshot();
+    ctx.broadcast("history_cleared", { threadId: threadId ?? null });
+    ctx.broadcast("snapshot", ctx.snapshot);
+    return {
+      status: 200,
+      body: { ok: true, deleted, recentRuns: ctx.snapshot.recentRuns },
+    };
   }
 
   return null;

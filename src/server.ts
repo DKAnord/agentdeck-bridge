@@ -84,6 +84,10 @@ export function createBridgeServer(
   const memoryStore = createMemoryStore(options.memoryDbPath ?? ":memory:");
   const freePool = createFreePoolManager();
   snapshot.handoffs = memoryStore.listHandoffs();
+  snapshot.recentRuns = memoryStore.history.listRuns({
+    limit: 20,
+    maxOutputChars: 4000,
+  });
 
   let stopped = false;
   let pulseTimer: ReturnType<typeof setInterval> | null = null;
@@ -124,6 +128,14 @@ export function createBridgeServer(
         createdAt: evt.createdAt,
       });
       broadcast("run_status", evt);
+    },
+    onHistoryChange: (record) => {
+      snapshot.recentRuns = memoryStore.history.listRuns({
+        limit: 20,
+        maxOutputChars: 4000,
+      });
+      touchSnapshot();
+      broadcast("history_updated", record);
     },
   });
 

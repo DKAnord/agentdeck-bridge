@@ -97,6 +97,20 @@ export interface GitHubPulseRepo {
   updatedAt: string;
 }
 
+export interface RunHistoryRecord {
+  id: string;
+  threadId: string;
+  repo: string;
+  harness: HarnessId;
+  prompt: string;
+  output: string;
+  status: "running" | "completed" | "failed";
+  error?: string;
+  durationMs?: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface DeckSnapshot {
   protocolVersion: 1;
   host: string;
@@ -106,6 +120,7 @@ export interface DeckSnapshot {
   recentEvents: BridgeEvent[];
   handoffs: HandoffCapsule[];
   pulses: GitHubPulseRepo[];
+  recentRuns: RunHistoryRecord[];
 }
 
 export interface ParsedClaudeHook {
@@ -154,6 +169,7 @@ export function createEmptySnapshot(host: string): DeckSnapshot {
     recentEvents: [],
     handoffs: [],
     pulses: [],
+    recentRuns: [],
   };
 }
 

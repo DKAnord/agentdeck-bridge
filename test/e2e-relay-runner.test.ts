@@ -285,6 +285,77 @@ describe("agentdeck-bridge v0.3.0 E2E crypto, live runner & routes", () => {
       expect(triageBody.route.selectedHarness).toBe("free_pool");
       expect(triageBody.run.started).toBe(true);
       expect(triageBody.run.output).toContain("TRIAGE_OK:");
+
+      const tid = "thread-multi-1";
+      const turn1 = await fetch(`${url}/v1/dispatch`, {
+        method: "POST",
+        headers: { ...authHdr, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          threadId: tid,
+          prompt: "First turn status check",
+          repo: "workspace",
+          executeNow: true,
+          cwd: workDir,
+        }),
+      });
+      expect(turn1.status).toBe(200);
+      const turn2 = await fetch(`${url}/v1/dispatch`, {
+        method: "POST",
+        headers: { ...authHdr, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          threadId: tid,
+          prompt: "Second turn follow-up",
+          repo: "workspace",
+        }),
+      });
+      const turn2Body = (await turn2.json()) as {
+        threadId: string;
+        route: { handoffPrompt: string };
+      };
+      expect(turn2Body.threadId).toBe(tid);
+      expect(turn2Body.route.handoffPrompt).toContain(
+        "[Recent CLI Thread History]",
+      );
+      expect(turn2Body.route.handoffPrompt).toContain(
+        "User: First turn status check",
+      );
+
+      const histRes = (await (
+        await fetch(`${url}/v1/history?threadId=${tid}`, { headers: authHdr })
+      ).json()) as {
+        ok: boolean;
+        runs: Array<{ prompt: string; repo: string; output: string }>;
+      };
+      expect(histRes.ok).toBe(true);
+      expect(histRes.runs.length).toBe(2);
+      expect(histRes.runs[0]?.prompt).toBe("First turn status check");
+      expect(histRes.runs[1]?.prompt).toBe("Second turn follow-up");
+
+      const snapBeforeClear = (await (
+        await fetch(`${url}/v1/snapshot`, { headers: authHdr })
+      ).json()) as {
+        handoffs: Array<{ repo: string }>;
+        recentRuns: Array<{ id: string }>;
+      };
+      expect(snapBeforeClear.handoffs.some((h) => h.repo === "workspace")).toBe(
+        false,
+      );
+      expect(snapBeforeClear.recentRuns.length).toBeGreaterThanOrEqual(2);
+
+      const clr = (await (
+        await fetch(`${url}/v1/history/clear`, {
+          method: "POST",
+          headers: { ...authHdr, "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        })
+      ).json()) as {
+        ok: boolean;
+        deleted: number;
+        recentRuns: unknown[];
+      };
+      expect(clr.ok).toBe(true);
+      expect(clr.deleted).toBeGreaterThanOrEqual(2);
+      expect(clr.recentRuns).toEqual([]);
     } finally {
       process.env.PATH = origPath;
     }

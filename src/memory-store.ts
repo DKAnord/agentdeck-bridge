@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createHistoryStore } from "./history-store.ts";
 import type { HandoffCapsule, HarnessId, MemoryRecord } from "./protocol.ts";
 
 export { syncAgentInstructionStubs } from "./rule-sync.ts";
@@ -109,7 +110,10 @@ export function cleanCapsuleGoal(raw: string): string {
         !line.startsWith("Recent actions:") &&
         !line.startsWith("Operator notes:") &&
         !line.startsWith("Recalled memories:") &&
-        !line.startsWith("[Live GitHub Repo Pulse]"),
+        !line.startsWith("[Live GitHub Repo Pulse]") &&
+        !line.startsWith("[Recent CLI Thread History") &&
+        !line.startsWith("User:") &&
+        !line.startsWith("Assistant ("),
     );
   const clean = lines.join(" ").replace(/\s+/g, " ").trim();
   return clean.length > 160 ? clean.slice(0, 160) : clean;
@@ -190,6 +194,7 @@ export function createMemoryStore(dbPath = ":memory:") {
   const deleteCapsuleStmt = db.prepare(
     "DELETE FROM handoff_capsules WHERE repo = ?",
   );
+  const history = createHistoryStore(db);
 
   function remember(input: RememberInput): MemoryRecord {
     const summary = input.summary.trim();
@@ -357,8 +362,12 @@ export function createMemoryStore(dbPath = ":memory:") {
     deleteHandoff: (repo: string) => {
       deleteCapsuleStmt.run(repo.trim());
     },
+    clearHandoffs: () => {
+      db.exec("DELETE FROM handoff_capsules");
+    },
     listHandoffs,
     buildHandoffContextBlock,
+    history,
     close: () => {
       if (closed) return;
       closed = true;

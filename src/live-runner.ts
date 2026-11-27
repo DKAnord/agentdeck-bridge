@@ -8,7 +8,7 @@ import {
   resolveCliBinary,
 } from "./github-pulse.ts";
 import type { MemoryStore } from "./memory-store.ts";
-import type { HarnessId } from "./protocol.ts";
+import type { HarnessId, RunHistoryRecord } from "./protocol.ts";
 import { resolveAllowedCwd } from "./runner-cwd.ts";
 
 export {
@@ -82,8 +82,10 @@ export interface LiveStatusEvent {
 
 export interface LivePromptRequest {
   runId?: string;
+  threadId?: string;
   harness: HarnessId;
   prompt: string;
+  rawPrompt?: string;
   repo?: string;
   branch?: string;
   cwd?: string;
@@ -92,6 +94,7 @@ export interface LivePromptRequest {
 
 export interface LivePromptResult {
   runId: string;
+  threadId?: string;
   started: boolean;
   rejected?: boolean;
   harness: HarnessId;
@@ -108,12 +111,14 @@ export interface LiveRunnerOptions {
   memoryStore?: MemoryStore;
   onOutput?: (event: LiveOutputEvent) => void;
   onStatus?: (event: LiveStatusEvent) => void;
+  onHistoryChange?: (record: RunHistoryRecord) => void;
   envPath?: string;
 }
 
 export type StartLivePromptHandle =
   | {
       runId: string;
+      threadId?: string;
       started: false;
       rejected?: boolean;
       cwd?: string;
@@ -122,6 +127,7 @@ export type StartLivePromptHandle =
     }
   | {
       runId: string;
+      threadId: string;
       started: true;
       command: string;
       cwd: string;
@@ -168,6 +174,7 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
     action: string,
     goal?: string,
   ) {
+    if (repo === "workspace" || repo === "my-api-repo") return;
     try {
       options.memoryStore?.recordActivity({
         repo,
@@ -231,6 +238,8 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
       );
     }
 
+    const threadId = req.threadId?.trim() || runId;
+    const cleanPrompt = req.rawPrompt?.trim() || req.prompt;
     const args = spec.buildArgs(req.prompt, cwdCheck.cwd);
     const commandLabel = `${spec.binary} ${args[0] ?? ""}`.trim();
     const timeoutMs = Math.max(
@@ -245,6 +254,14 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
       shell: false,
     });
     activeChildren.set(runId, child);
+    const startedRec = options.memoryStore?.history.recordRunStart({
+      id: runId,
+      threadId,
+      repo,
+      harness: req.harness,
+      prompt: cleanPrompt,
+    });
+    if (startedRec) options.onHistoryChange?.(startedRec);
     recordSafe(req, repo, `Live run started: ${commandLabel}`);
     emitStatus(runId, req, repo, cwdCheck.cwd, "running");
 
@@ -301,6 +318,16 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
         flushStream("stderr");
         activeChildren.delete(runId);
         const status = exitCode === 0 && !error ? "completed" : "failed";
+        const cleanOutput = stripAnsi(output).trim();
+        const durationMs = Date.now() - startedAt;
+        const finishedRec = options.memoryStore?.history.recordRunFinish({
+          id: runId,
+          output: cleanOutput,
+          status,
+          error,
+          durationMs,
+        });
+        if (finishedRec) options.onHistoryChange?.(finishedRec);
         recordSafe(
           req,
           repo,
@@ -312,14 +339,15 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
         });
         resolve({
           runId,
+          threadId,
           started: true,
           harness: req.harness,
           command: commandLabel,
           cwd: cwdCheck.cwd,
           exitCode,
-          output: stripAnsi(output).trim(),
+          output: cleanOutput,
           ...(error ? { error } : {}),
-          durationMs: Date.now() - startedAt,
+          durationMs,
         });
       };
       const timer = setTimeout(() => {
@@ -334,6 +362,7 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
 
     return {
       runId,
+      threadId,
       started: true,
       command: commandLabel,
       cwd: cwdCheck.cwd,
