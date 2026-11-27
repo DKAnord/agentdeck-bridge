@@ -39,6 +39,7 @@ export interface BridgeServerOptions {
   relaySessionPath?: string;
   allowedDirs?: string[];
   enableGitHubPulse?: boolean;
+  autoDetectHarnesses?: boolean;
 }
 
 export interface BridgeServerHandle {
@@ -125,6 +126,37 @@ export function createBridgeServer(
       broadcast("run_status", evt);
     },
   });
+
+  if (options.autoDetectHarnesses) {
+    if (liveRunner.isHarnessAvailable("antigravity")) {
+      snapshot.harnesses.push({
+        harness: "antigravity",
+        label: "Antigravity (agy)",
+        remainingPct: 100,
+        tier: "pro",
+        status: "idle",
+      });
+    }
+    if (liveRunner.isHarnessAvailable("claude_code")) {
+      snapshot.harnesses.push({
+        harness: "claude_code",
+        label: "Claude Code",
+        remainingPct: 100,
+        tier: "pro",
+        status: "idle",
+      });
+    }
+    if (liveRunner.isHarnessAvailable("codex")) {
+      snapshot.harnesses.push({
+        harness: "codex",
+        label: "Codex CLI",
+        remainingPct: 100,
+        tier: "pro",
+        status: "idle",
+      });
+    }
+    snapshot.harnesses.push(freePool.toQuotaWindow());
+  }
 
   const routeCtx: BridgeRouteContext = {
     snapshot,

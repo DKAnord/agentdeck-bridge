@@ -91,6 +91,30 @@ function mergeRecent(
   return [clean, ...existing.filter((item) => item !== clean)].slice(0, max);
 }
 
+export function cleanCapsuleGoal(raw: string): string {
+  const taskMarker = "\n\n[Task]\n";
+  const afterTask = raw.includes(taskMarker)
+    ? raw.slice(raw.lastIndexOf(taskMarker) + taskMarker.length)
+    : raw;
+  const lines = afterTask
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.length > 0 &&
+        !line.includes("[AgentDeck Shared Memory") &&
+        !line.startsWith("Repo:") &&
+        !line.startsWith("Diff:") &&
+        !line.startsWith("Touched files:") &&
+        !line.startsWith("Recent actions:") &&
+        !line.startsWith("Operator notes:") &&
+        !line.startsWith("Recalled memories:") &&
+        !line.startsWith("[Live GitHub Repo Pulse]"),
+    );
+  const clean = lines.join(" ").replace(/\s+/g, " ").trim();
+  return clean.length > 160 ? clean.slice(0, 160) : clean;
+}
+
 function rowToMemory(row: MemoryRow): MemoryRecord {
   return {
     id: row.id,
@@ -107,7 +131,7 @@ function rowToCapsule(row: CapsuleRow): HandoffCapsule {
   return {
     repo: row.repo,
     branch: row.branch,
-    goal: row.goal,
+    goal: cleanCapsuleGoal(row.goal) || "Active session",
     lastHarness: row.last_harness as HarnessId,
     ...(row.diff_summary ? { diffSummary: row.diff_summary } : {}),
     touchedFiles: parseJsonStringArray(row.touched_files_json),
@@ -162,6 +186,9 @@ export function createMemoryStore(dbPath = ":memory:") {
   );
   const listCapsulesStmt = db.prepare(
     "SELECT * FROM handoff_capsules ORDER BY updated_at DESC LIMIT ?",
+  );
+  const deleteCapsuleStmt = db.prepare(
+    "DELETE FROM handoff_capsules WHERE repo = ?",
   );
 
   function remember(input: RememberInput): MemoryRecord {
@@ -236,9 +263,11 @@ export function createMemoryStore(dbPath = ":memory:") {
     const repo = input.repo.trim() || "workspace";
     const existing = getHandoff(repo);
     const branch = input.branch?.trim() || existing?.branch || "main";
+    const cleanedIncomingGoal = input.goal ? cleanCapsuleGoal(input.goal) : "";
+    const existingGoal = existing ? cleanCapsuleGoal(existing.goal) : "";
     const goal =
-      input.goal?.trim() ||
-      existing?.goal ||
+      cleanedIncomingGoal ||
+      existingGoal ||
       input.action?.trim() ||
       "Active session";
     const diffSummary = input.diffSummary?.trim() || existing?.diffSummary;
@@ -325,6 +354,9 @@ export function createMemoryStore(dbPath = ":memory:") {
     recall,
     recordActivity,
     getHandoff,
+    deleteHandoff: (repo: string) => {
+      deleteCapsuleStmt.run(repo.trim());
+    },
     listHandoffs,
     buildHandoffContextBlock,
     close: () => {

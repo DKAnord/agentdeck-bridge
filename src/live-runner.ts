@@ -245,24 +245,28 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
       shell: false,
     });
     activeChildren.set(runId, child);
-    recordSafe(
-      req,
-      repo,
-      `Live run started: ${commandLabel}`,
-      req.prompt.slice(0, 160),
-    );
+    recordSafe(req, repo, `Live run started: ${commandLabel}`);
     emitStatus(runId, req, repo, cwdCheck.cwd, "running");
 
     const done = new Promise<LivePromptResult>((resolve) => {
       let output = "";
       let settled = false;
-      const append = (stream: "stdout" | "stderr", buf: Buffer | string) => {
-        const rawChunk = typeof buf === "string" ? buf : buf.toString("utf8");
-        const chunk = stripAnsi(rawChunk);
-        if (!chunk) return;
-        if (output.length < MAX_OUTPUT_BYTES) {
-          output += chunk.slice(0, MAX_OUTPUT_BYTES - output.length);
+      const pendingBuf: Record<"stdout" | "stderr", string> = {
+        stdout: "",
+        stderr: "",
+      };
+      const flushTimers: Partial<
+        Record<"stdout" | "stderr", ReturnType<typeof setTimeout>>
+      > = {};
+      const flushStream = (stream: "stdout" | "stderr") => {
+        const t = flushTimers[stream];
+        if (t) {
+          clearTimeout(t);
+          delete flushTimers[stream];
         }
+        const chunk = pendingBuf[stream];
+        if (!chunk) return;
+        pendingBuf[stream] = "";
         options.onOutput?.({
           runId,
           harness: req.harness,
@@ -272,10 +276,29 @@ export function createLiveRunner(options: LiveRunnerOptions = {}) {
           createdAt: new Date().toISOString(),
         });
       };
+      const append = (stream: "stdout" | "stderr", buf: Buffer | string) => {
+        const rawChunk = typeof buf === "string" ? buf : buf.toString("utf8");
+        const chunk = stripAnsi(rawChunk);
+        if (!chunk) return;
+        if (output.length < MAX_OUTPUT_BYTES) {
+          output += chunk.slice(0, MAX_OUTPUT_BYTES - output.length);
+        }
+        pendingBuf[stream] += chunk;
+        if (
+          pendingBuf[stream].includes("\n") ||
+          pendingBuf[stream].length >= 512
+        ) {
+          flushStream(stream);
+        } else if (!flushTimers[stream]) {
+          flushTimers[stream] = setTimeout(() => flushStream(stream), 40);
+        }
+      };
       const finish = (exitCode: number | null, error?: string) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        flushStream("stdout");
+        flushStream("stderr");
         activeChildren.delete(runId);
         const status = exitCode === 0 && !error ? "completed" : "failed";
         recordSafe(

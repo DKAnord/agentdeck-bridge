@@ -185,10 +185,36 @@ export async function handleExtendedBridgeRoute(
         ? Math.max(0, Math.min(90, Math.round(obj.reserveFloorPct)))
         : ctx.defaultReserveFloorPct;
 
-    const { capsule, block } = ctx.memoryStore.buildHandoffContextBlock(
-      repo,
-      prompt,
-    );
+    const isGenericScope = repo === "workspace" || repo === "my-api-repo";
+    const { capsule, block: rawBlock } = isGenericScope
+      ? {
+          capsule: undefined,
+          block: "",
+        }
+      : ctx.memoryStore.buildHandoffContextBlock(repo, prompt);
+    let contextBlock = rawBlock;
+    if (isGenericScope) {
+      const parts: string[] = [];
+      if (ctx.snapshot.pulses.length > 0) {
+        parts.push(
+          `[Live GitHub Repo Pulse]\n${ctx.snapshot.pulses
+            .map(
+              (p) =>
+                `- ${p.repo} (${p.branch}): CI=${p.ciStatus}, ${p.openIssues} open issues, ${p.openPrs} open PRs`,
+            )
+            .join("\n")}`,
+        );
+      }
+      const memories = ctx.memoryStore.recall({ query: prompt, limit: 3 });
+      if (memories.length > 0) {
+        parts.push(
+          `Recalled memories:\n${memories
+            .map((m) => `- [${m.repo}/${m.scope}] ${m.summary}`)
+            .join("\n")}`,
+        );
+      }
+      contextBlock = parts.join("\n\n");
+    }
     const route = selectProactiveHarness({
       prompt,
       harnesses: ctx.snapshot.harnesses,
@@ -196,17 +222,19 @@ export async function handleExtendedBridgeRoute(
       preferredHarness: parseHarnessId(obj.preferredHarness) ?? undefined,
       reserveFloorPct,
       freePool: ctx.freePool,
-      contextBlock: block,
+      contextBlock,
       capsule,
     });
-    ctx.memoryStore.recordActivity({
-      repo,
-      branch,
-      harness: route.selectedHarness,
-      goal: prompt.slice(0, 160),
-      action: `Dispatched: ${prompt.slice(0, 120)}`,
-    });
-    ctx.snapshot.handoffs = ctx.memoryStore.listHandoffs();
+    if (!isGenericScope) {
+      ctx.memoryStore.recordActivity({
+        repo,
+        branch,
+        harness: route.selectedHarness,
+        goal: prompt.slice(0, 160),
+        action: `Dispatched: ${prompt.slice(0, 120)}`,
+      });
+      ctx.snapshot.handoffs = ctx.memoryStore.listHandoffs();
+    }
     ctx.touchSnapshot();
     ctx.broadcast("task_routed", route);
 

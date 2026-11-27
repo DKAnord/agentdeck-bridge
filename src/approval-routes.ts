@@ -124,13 +124,15 @@ export function resolveApprovalRequest(
   approval.status = decision === "approve" ? "approved" : "denied";
   if (replyNote) {
     approval.replyNote = replyNote;
-    ctx.memoryStore.recordActivity({
-      repo: approval.repo,
-      branch: approval.branch,
-      harness: approval.harness,
-      note: replyNote,
-    });
-    ctx.snapshot.handoffs = ctx.memoryStore.listHandoffs();
+    if (approval.repo !== "my-api-repo") {
+      ctx.memoryStore.recordActivity({
+        repo: approval.repo,
+        branch: approval.branch,
+        harness: approval.harness,
+        note: replyNote,
+      });
+      ctx.snapshot.handoffs = ctx.memoryStore.listHandoffs();
+    }
   }
   ctx.touchSnapshot();
   ctx.broadcast("approval_resolved", approval);

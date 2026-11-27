@@ -151,14 +151,6 @@ export async function handleLiveBridgeRoute(
       summary: `${repo} (${branch}): ${command}`,
       createdAt,
     });
-    ctx.memoryStore.recordActivity({
-      repo,
-      branch,
-      harness,
-      action: command,
-      diffSummary,
-    });
-    ctx.snapshot.handoffs = ctx.memoryStore.listHandoffs();
 
     const { approval, waitResult } = await submitApproval(ctx, {
       harness,

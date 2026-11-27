@@ -1,6 +1,6 @@
 {
   "name": "agentdeck-bridge",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "MIT zero-dependency local JSON/SSE bridge, E2E relay client, proactive quota router, and shared SQLite MCP memory for AgentDeck",
   "license": "MIT",
   "private": true,

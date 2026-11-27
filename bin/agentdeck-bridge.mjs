@@ -147,11 +147,12 @@ if (args.includes("--mcp")) {
     relaySessionPath,
     allowedDirs,
     enableGitHubPulse,
+    autoDetectHarnesses: !args.includes("--no-auto-harnesses"),
   });
 
   const bound = await handle.start();
   console.log(
-    `agentdeck-bridge v0.3.0 listening on ${bound.url} (Protocol v1 · auth=${authToken ? "bearer" : "off"} · db=${memoryDbPath})`,
+    `agentdeck-bridge v0.3.2 listening on ${bound.url} (Protocol v1 · auth=${authToken ? "bearer" : "off"} · db=${memoryDbPath})`,
   );
   console.log(`  GET  ${bound.url}/v1/health`);
   console.log(`  GET  ${bound.url}/v1/snapshot`);
